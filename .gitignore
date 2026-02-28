@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+.env/
+build/
+dist/
+*.spec
+.vscode/
+.idea/
+
+# Inno Setup
+installer/
+installer_meta/
+*.iss
+
+# Logs
+*.log
+[DEBUG]*.log
+
+# Project specific
+CPFs/
+output/
+settings.json
+license.key
+*.pdf

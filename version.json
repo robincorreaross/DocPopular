@@ -1,0 +1,13 @@
+{
+  "version": "1.0.0",
+  "release_date": "2026-02-27",
+  "download_zip_url": "https://github.com/robincorreaross/DocPopular/releases/latest/download/DocPopular.zip",
+  "download_url": "https://github.com/robincorreaross/DocPopular/releases/latest",
+  "changelog": [
+    "Initial release of DocPopular (Fork from FarmaPop_IA)",
+    "Removed all AI functionality",
+    "Implemented human audit system"
+  ],
+  "mandatory": true
+}
+

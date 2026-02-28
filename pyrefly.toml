@@ -1,0 +1,12 @@
+# Configuração do Pyrefly (Meta Pyre2) para o projeto FarmaPop IA
+# Aponta para o ambiente virtual local (venv)
+
+python_interpreter = "venv/Scripts/python.exe"
+
+site_package_path = [
+  "venv/Lib/site-packages"
+]
+
+search_path = [
+  "."
+]
