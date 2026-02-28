@@ -6,20 +6,48 @@ from __future__ import annotations
 
 from typing import Any, List
 
+import os
+import sys
+import ctypes
+from pathlib import Path
 import customtkinter as ctk
 from core.config import load_settings, save_settings
 from version import APP_VERSION
+
+def get_resource_path(relative_path: str) -> str:
+    """Retorna o caminho absoluto do recurso, compatível com PyInstaller."""
+    if getattr(sys, "frozen", False):
+        base_path = Path(sys._MEIPASS)
+    else:
+        base_path = Path(__file__).parent.parent
+    return str(base_path / relative_path)
+
 
 
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
 
+        # Registra o AppUserModelID para o Windows mostrar o ícone na Barra de Tarefas
+        try:
+            myappid = 'RossSistemas.DocPopular.Auditor.v1' # Identificador único
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+        except Exception:
+            pass
+
         self.title("DocPopular — Auditor de Documentos PFPB")
         self.geometry("1150x720")
         self.minsize(1000, 650)
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
+
+        # Define o ícone da janela
+        try:
+            icon_path = get_resource_path("assets/icon.ico")
+            if os.path.exists(icon_path):
+                self.iconbitmap(icon_path)
+        except Exception as e:
+            print(f"[DEBUG] Erro ao carregar ícone da janela: {e}")
 
         self.settings = load_settings()
         self.current_transaction = None

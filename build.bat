@@ -2,7 +2,6 @@
 echo ============================================================
 echo   DocPopular - Build Completo (PyInstaller + Instalador)
 echo ============================================================
-echo.
 
 REM Ativa o venv
 if not exist venv (
@@ -12,8 +11,26 @@ if not exist venv (
 )
 call venv\Scripts\activate.bat
 
-echo [1/3] Compilando o aplicativo com PyInstaller...
-pyinstaller --clean --noconfirm DocPopular.spec
+REM Tenta fechar o app e o compilador se estiverem abertos
+taskkill /F /IM DocPopular.exe /T >nul 2>&1
+taskkill /F /IM ISCC.exe /T >nul 2>&1
+timeout /t 2 /nobreak >nul
+
+REM Limpa a pasta installer para evitar erros de lock
+if exist installer (
+    echo [+] Limpando pasta installer...
+    del /q installer\* >nul 2>&1
+) else (
+    mkdir installer
+)
+
+REM Extrai a versao do version.py usando python
+for /f %%I in ('python -c "from version import APP_VERSION; print(APP_VERSION)"') do set APP_VERSION=%%I
+echo [+] Versao detectada: v%APP_VERSION%
+echo.
+
+echo [1/2] Compilando o aplicativo com PyInstaller...
+python -m PyInstaller --clean --noconfirm DocPopular.spec
 if errorlevel 1 (
     echo ERRO: falha ao gerar o aplicativo.
     pause & exit /b 1
@@ -21,16 +38,8 @@ if errorlevel 1 (
 echo     OK - dist\DocPopular\
 
 echo.
-echo [2/3] Compilando ferramenta do desenvolvedor...
-pyinstaller --clean --noconfirm --distpath dist_tools GeradorLicencas.spec
-if errorlevel 1 (
-    echo ERRO: falha ao gerar o gerador de licencas.
-    pause & exit /b 1
-)
-echo     OK - dist_tools\GeradorLicencas.exe
-
-echo.
-echo [3/3] Gerando instalador com Inno Setup...
+echo [2/2] Gerando instalador com Inno Setup...
+python _gerar_iss.py
 
 REM Procura o compilador do Inno Setup
 set ISCC=
@@ -51,24 +60,24 @@ if errorlevel 1 (
 )
 
 echo.
-echo [4/4] Criando pacote ZIP para auto-update...
-set ZIP_NAME=DocPopular.zip
-if exist "installer\%ZIP_NAME%" del "installer\%ZIP_NAME%"
-powershell -Command "Compress-Archive -Path 'dist\DocPopular\*' -DestinationPath 'installer\%ZIP_NAME%' -Force"
+echo [3/3] Criando pacote ZIP para auto-update...
+timeout /t 2 /nobreak >nul
+set ZIP_BASE_NAME=DocPopular
+if exist "installer\%ZIP_BASE_NAME%.zip" del "installer\%ZIP_BASE_NAME%.zip"
+python -c "import shutil; shutil.make_archive('installer/%ZIP_BASE_NAME%', 'zip', 'dist/DocPopular')"
 if errorlevel 1 (
     echo ERRO: falha ao gerar o arquivo ZIP.
     pause & exit /b 1
 )
-echo     OK - installer\%ZIP_NAME%
+echo     OK - installer\%ZIP_BASE_NAME%.zip (v%APP_VERSION%)
 
 echo.
 echo ============================================================
 echo   BUILD COMPLETO!
 echo ============================================================
 echo.
-echo  Instalador:  installer\DocPopular_Setup_v1.0.0.exe
+echo  Instalador:  installer\DocPopular_Setup_v%APP_VERSION%.exe
 echo  Auto-update: installer\DocPopular.zip
-echo  Gerador:     dist_tools\GeradorLicencas.exe (SOMENTE DEV)
 echo.
 echo  IMPORTANTE: 
 echo  1. Envie o .exe para novos clientes.
