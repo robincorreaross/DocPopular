@@ -104,15 +104,20 @@ class LicenseError(Exception):
 
 def verificar_licenca_online(machine_id: str) -> Optional[dict]:
     """
-    Tenta validar a licença pela API do Google Sheets.
+    Tenta validar a licença pela API REST do Supabase.
     Retorna dict com dados se válido, None se não encontrado ou erro.
     """
     try:
-        # Tenta importar a URL da versão de forma resiliente
-        license_url = None
+        # Carrega configurações do Supabase
+        supabase_url = None
+        supabase_key = None
+        supabase_table = None
+        
         try:
-            from version import LICENSE_API_URL
-            license_url = LICENSE_API_URL
+            from version import SUPABASE_URL, SUPABASE_KEY, SUPABASE_TABLE
+            supabase_url = SUPABASE_URL
+            supabase_key = SUPABASE_KEY
+            supabase_table = SUPABASE_TABLE
         except ImportError:
             try:
                 import sys
@@ -120,82 +125,102 @@ def verificar_licenca_online(machine_id: str) -> Optional[dict]:
                 root = Path(__file__).parent.parent
                 if str(root) not in sys.path:
                     sys.path.append(str(root))
-                from version import LICENSE_API_URL
-                license_url = LICENSE_API_URL
+                from version import SUPABASE_URL, SUPABASE_KEY, SUPABASE_TABLE
+                supabase_url = SUPABASE_URL
+                supabase_key = SUPABASE_KEY
+                supabase_table = SUPABASE_TABLE
             except:
                 pass
             
-        if not license_url:
-            print("[DEBUG] LICENSE_API_URL não encontrada no version.py")
+        if not all([supabase_url, supabase_key, supabase_table]):
+            print("[DEBUG] Configurações do Supabase não encontradas no version.py")
             return None
         
         mid_clean = machine_id.strip().upper()
-        # Debug console
-        url = f"{license_url}?machineId={urllib.parse.quote(mid_clean)}"
-        print(f"[DEBUG] Tentando conexão: {url}")
         
-        # Google as vezes exige um User-Agent de navegador para não dar 403
+        # 1. CONSULTA: Buscar licença pelo Machine ID
+        # Endpoint: /rest/v1/table?machine_id=eq.MID&select=*
+        query_params = urllib.parse.urlencode({"machine_id": f"eq.{mid_clean}", "select": "*"})
+        url = f"{supabase_url}/rest/v1/{supabase_table}?{query_params}"
+        
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            'apikey': supabase_key,
+            'Authorization': f'Bearer {supabase_key}',
+            'Content-Type': 'application/json',
+            'Prefer': 'return=representation'
         }
-        req = urllib.request.Request(url, headers=headers)
         
-        with urllib.request.urlopen(req, timeout=20) as response:
+        print(f"[DEBUG] Tentando conexão Supabase: {url}")
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        
+        with urllib.request.urlopen(req, timeout=15) as response:
             if response.getcode() == 200:
-                raw_res = response.read().decode()
-                res_data = json.loads(raw_res)
+                rows = json.loads(response.read().decode())
                 
-                if res_data.get("valido"):
-                    # ... [mesma lógica de validação de expiração] ...
-                    print(f"[DEBUG] Licença ONLINE confirmada para {mid_clean}")
+                if not rows:
+                    # Registro não encontrado
+                    raise LicenseError("status:novo")
+                
+                # Pega o primeiro registro encontrado
+                data = rows[0]
+                status_bd = str(data.get("status", "")).strip().lower()
+                plano_bd = str(data.get("plan", "")).strip().lower()
+
+                # Verifica se está ativo (ENUM no banco é 'ATIVO', .lower() vira 'ativo')
+                if status_bd != "ativo":
+                    raise LicenseError(f"Sua licença está {status_bd.upper()}. Entre em contato com o administrador.")
+                
+                # Validação de Expiração
+                exp_str = data.get("expiration")
+                expiry_date = None
+                display_exp = "Vitalício"
+                
+                if exp_str:
+                    # Formatos possíveis: '2088-01-01T10:00:00' ou '2088-01-01 10:00:00'
+                    try:
+                        date_clean = str(exp_str).replace("T", " ").split(" ")[0]
+                        expiry_date = datetime.strptime(date_clean, "%Y-%m-%d").date()
+                        display_exp = expiry_date.strftime("%d/%m/%Y")
+                    except Exception as e:
+                        print(f"[DEBUG] Erro ao parsear data {exp_str}: {e}")
+                
+                if expiry_date and date.today() > expiry_date:
+                    print(f"[DEBUG] Licença ONLINE expirou em {expiry_date}")
+                    raise LicenseError("Sua licença expirou. Entre em contato para renovar.")
+                
+                # 2. ATUALIZAÇÃO: Gravar Last Login
+                try:
+                    update_url = f"{supabase_url}/rest/v1/{supabase_table}?id=eq.{data['id']}"
+                    update_data = json.dumps({"last_login": "now()"}).encode()
+                    update_req = urllib.request.Request(update_url, data=update_data, headers=headers, method="PATCH")
+                    with urllib.request.urlopen(update_req, timeout=5) as u_res:
+                        if u_res.getcode() in (200, 204):
+                            print(f"[DEBUG] Last login atualizado para {mid_clean}")
+                except Exception as ex:
+                    print(f"[DEBUG] Erro ao atualizar last login (não crítico): {ex}")
+
+                dias_restantes = 8888 # Representa vitalício se None
+                if expiry_date:
+                    dias_restantes = (expiry_date - date.today()).days
                     
-                    exp_str = res_data.get("expiry", "")
-                    expiry_date = None
-                    display_exp = str(exp_str)
-                    
-                    if exp_str and str(exp_str).lower() != "vitalício":
-                        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%Y/%m/%d"):
-                            try:
-                                date_part = str(exp_str).replace("T", " ").split(" ")[0]
-                                expiry_date = datetime.strptime(date_part, fmt).date()
-                                display_exp = expiry_date.strftime("%d/%m/%Y")
-                                break
-                            except:
-                                continue
-                        
-                        if expiry_date and date.today() > expiry_date:
-                            print(f"[DEBUG] Licença ONLINE ignorada: Expirou em {expiry_date}")
-                            raise LicenseError("Sua licença expirou. Entre em contato para renovar.")
-                    
-                    dias_restantes = 999
-                    if expiry_date:
-                        dias_restantes = (expiry_date - date.today()).days
-                        
-                    return {
-                        "valido": True,
-                        "expiry": display_exp or "Vitalício",
-                        "dias_restantes": dias_restantes,
-                        "cliente": res_data.get("cliente", "Cliente Online"),
-                        "auditorias_limite": res_data.get("auditorias", 0), # Novo campo
-                        "metodo": "online"
-                    }
-                else:
-                    status_servidor = res_data.get("status", "").lower()
-                    msg_servidor = res_data.get("erro", "").lower()
-                    
-                    if "inativo" in status_servidor or "inativa" in msg_servidor:
-                        raise LicenseError("Sua licença está inativa. Entre em contato com o administrador.")
-                    elif "não encontrado" in msg_servidor:
-                        # Este é o caso de Primeira Instalação
-                        raise LicenseError("status:novo") 
-                    else:
-                        raise LicenseError(res_data.get("erro", "Aguardando liberação do administrador."))
+                print(f"[DEBUG] Licença ONLINE validada com sucesso para {data.get('name')}")
+                return {
+                    "valido": True,
+                    "expiry": display_exp,
+                    "dias_restantes": dias_restantes,
+                    "cliente": data.get("name", "Cliente Online"),
+                    "plano": data.get("plan", "Trial"),
+                    "auditorias_limite": 99999, # Valor alto por padrão no Supabase
+                    "metodo": "online"
+                }
             else:
-                print(f"[DEBUG] Servidor Google retornou erro HTTP: {response.getcode()}")
+                print(f"[DEBUG] Supabase retornou código HTTP {response.getcode()}")
     except LicenseError:
         raise
     except Exception as e:
-        print(f"[DEBUG] Erro na comunicação de licença: {e}")
+        print(f"[DEBUG] Erro crítico na validação Supabase: {e}")
+        import traceback
+        traceback.print_exc()
     return None
 
 
@@ -246,6 +271,8 @@ def validar_licenca(key: str) -> dict:  # type: ignore[type-arg]
             "expiry": online_res["expiry"],
             "dias_restantes": online_res.get("dias_restantes", 30),
             "auditorias_limite": online_res.get("auditorias_limite", 0),
+            "plano": online_res.get("plano", "TRIAL"),
+            "cliente": online_res.get("cliente", "Cliente"),
             "metodo": "online"
         }
 

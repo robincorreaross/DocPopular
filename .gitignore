@@ -27,3 +27,6 @@ output/
 settings.json
 license.key
 *.pdf
+
+# Supabase login
+licences_supabase/

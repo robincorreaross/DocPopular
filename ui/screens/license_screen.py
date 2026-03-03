@@ -197,7 +197,7 @@ class LicenseScreen(ctk.CTk):
                 self._status_label.configure(text="❌ Ainda não consta como ativo na planilha.", text_color="#EF5350")
         except LicenseError as e:
             msg = str(e)
-            if "novo" in msg: msg = "Aguardando criação na planilha."
+            if "novo" in msg: msg = "Aguardando liberação no sistema."
             self._status_label.configure(text=f"❌ {msg}", text_color="#EF5350")
         except Exception:
             self._status_label.configure(text="⚠️ Verifique sua internet.", text_color="#FFA726")

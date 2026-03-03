@@ -103,10 +103,10 @@ class HelpScreen(ctk.CTkFrame):
         status_row.pack(padx=25, pady=(15, 20), fill="x")
 
         exp = "Desconhecida"
-        metodo = "Pendente"
+        plano = "N/A"
         if self.license_info:
             exp = self.license_info.get("expiry", "N/A")
-            metodo = "Online" if self.license_info.get("metodo") == "online" else "Offline"
+            plano = str(self.license_info.get("plano", "N/A")).upper()
 
         ctk.CTkLabel(
             status_row,
@@ -117,9 +117,9 @@ class HelpScreen(ctk.CTkFrame):
 
         ctk.CTkLabel(
             status_row,
-            text=f"Tipo: {metodo}",
-            font=ctk.CTkFont(size=11),
-            text_color="#546E7A"
+            text=f"Plano: {plano}",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#4FC3F7"
         ).pack(side="right")
 
         # ── Card de Suporte ───────────────────────────────────────────────
