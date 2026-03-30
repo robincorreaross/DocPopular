@@ -1,9 +1,8 @@
-customtkinter>=5.2.0
+PySide6>=6.6.0
 Pillow>=10.0.0
 reportlab>=4.0.0
 pywin32>=306
 python-dotenv>=1.0.0
 cryptography>=42.0.0
-tkcalendar>=1.6.1
 pymupdf>=1.24.0
 pyinstaller>=6.3.0

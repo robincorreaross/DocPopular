@@ -5,9 +5,12 @@ transaction.py - Define os 3 tipos de transação e suas etapas de digitalizaç�
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, TYPE_CHECKING
 
 from PIL import Image
+
+if TYPE_CHECKING:
+    from core.doc_validator import DocumentData
 
 
 @dataclass
@@ -20,6 +23,8 @@ class ScanStep:
     imagens: List[Image.Image] = field(default_factory=list)
     require_cpf: bool = False
     cpf: str = ""
+    validacao_doc: dict = field(default_factory=dict)  # Resultados da validação OCR
+    documents: list = field(default_factory=list)  # List[DocumentData] para o novo fluxo
 
     def adicionar_imagem(self, imagem: Image.Image) -> None:
         self.imagens.append(imagem)
@@ -44,6 +49,9 @@ class Transaction:
     nome_tipo: str
     etapas: List[ScanStep]
     etapa_atual_index: int = 0
+    is_menor_idade: bool = False
+    is_idoso: bool = False
+    idade_paciente: int = 0
 
     @property
     def etapa_atual(self) -> ScanStep:
@@ -69,6 +77,17 @@ class Transaction:
         self.etapa_atual_index = self.total_etapas  # marca como concluída
         return False
 
+    def voltar_etapa(self) -> bool:
+        """Volta para a etapa anterior. Retorna False se já está na primeira."""
+        if self.etapa_atual_index > 0:
+            # Se estava concluída (index == total_etapas), volta para a última
+            if self.etapa_atual_index >= self.total_etapas:
+                self.etapa_atual_index = self.total_etapas - 1
+            else:
+                self.etapa_atual_index -= 1
+            return True
+        return False
+
     def todas_imagens(self) -> List[Image.Image]:
         """Retorna todas as imagens de todas as etapas, em ordem."""
         todas: List[Image.Image] = []
@@ -87,6 +106,14 @@ class Transaction:
             for e in self.etapas
         ]
 
+    def inserir_etapa_apos_atual(self, etapa: ScanStep) -> None:
+        """Insere uma nova etapa logo após a etapa atual."""
+        self.etapas.insert(self.etapa_atual_index + 1, etapa)
+
+    def ja_tem_etapa(self, etapa_id: str) -> bool:
+        """Verifica se uma etapa com o ID dado já existe na transação."""
+        return any(e.id == etapa_id for e in self.etapas)
+
 
 # ─── Fábricas de Transação ────────────────────────────────────────────────────
 
@@ -98,7 +125,7 @@ def criar_transacao_proprio_paciente() -> Transaction:
         etapas=[
             ScanStep(
                 id="id_paciente",
-                titulo="Documento de Identificação do Paciente",
+                titulo="Identificação do Paciente",
                 descricao=(
                     "Digitalize o documento de identificação com foto do paciente.\n"
                     "O documento deve conter o número do CPF."
@@ -136,7 +163,7 @@ def criar_transacao_procurador() -> Transaction:
         etapas=[
             ScanStep(
                 id="id_paciente",
-                titulo="Documento de Identificação do Paciente",
+                titulo="Identificação do Paciente",
                 descricao=(
                     "Digitalize o documento de identificação com foto do paciente da receita.\n"
                     "O documento deve conter o número do CPF."
@@ -264,3 +291,91 @@ def criar_transacao(tipo: int) -> Transaction:
     if tipo not in FABRICAS_TRANSACAO:
         raise ValueError(f"Tipo de transação inválido: {tipo}")
     return FABRICAS_TRANSACAO[tipo]()
+
+
+# ─── Fluxo Único Inteligente (v2.0.0) ────────────────────────────────────────
+
+def criar_transacao_unica() -> Transaction:
+    """
+    Cria uma transação com fluxo único inteligente.
+    Começa apenas com o documento de identificação do paciente.
+    As etapas seguintes são inseridas dinamicamente conforme a validação avança.
+    """
+    return Transaction(
+        tipo=0,
+        nome_tipo="Fluxo Único",
+        etapas=[
+            ScanStep(
+                id="id_paciente",
+                titulo="Documento de Identificação do Paciente",
+                descricao=(
+                    "Digitalize o documento de identificação com foto do paciente.\n"
+                    "O documento deve conter o número do CPF."
+                ),
+                icone="🪪",
+                require_cpf=True,
+            ),
+            ScanStep(
+                id="receita",
+                titulo="Receita Médica e/ou Laudo Médico",
+                descricao=(
+                    "Digitalize a Receita Médica e/ou o Laudo Médico.\n"
+                    "Verifique se contém assinatura, carimbo e CRM do médico."
+                ),
+                icone="📋",
+            ),
+            ScanStep(
+                id="cupom",
+                titulo="Cupom Fiscal + Cupom Vinculado",
+                descricao=(
+                    "Digitalize o Cupom Fiscal e o Cupom Vinculado do programa.\n"
+                    "O Cupom Vinculado deve conter o endereço do beneficiário e estar assinado."
+                ),
+                icone="🧾",
+            ),
+        ],
+    )
+
+
+# ─── Fluxo Unificado (v3.0.0) ────────────────────────────────────────────────
+
+def criar_transacao_unificada(cpf_paciente: str = "") -> Transaction:
+    """
+    Cria uma transação com fluxo unificado — todos os documentos em uma única tela.
+    O campo documents do ScanStep armazena os DocumentData de validação.
+    """
+    return Transaction(
+        tipo=10,
+        nome_tipo="Fluxo Unificado",
+        etapas=[
+            ScanStep(
+                id="all_documents",
+                titulo="Digitalização de Documentos",
+                descricao=(
+                    "Digitalize ou importe todos os documentos da transação.\n"
+                    "A IA identificará o tipo e validará cada documento automaticamente."
+                ),
+                icone="📋",
+                require_cpf=False,
+                cpf=cpf_paciente,
+            ),
+        ],
+    )
+
+
+# ─── Etapas Dinâmicas ─────────────────────────────────────────────────────────
+
+def criar_etapa_responsavel_legal() -> ScanStep:
+    """Cria etapa para documento do responsável legal (menor de idade)."""
+    return ScanStep(
+        id="id_responsavel",
+        titulo="Identificação do Responsável Legal",
+        descricao=(
+            "Paciente menor de 18 anos detectado.\n"
+            "Digitalize o documento de identificação do responsável legal (pai, mãe ou tutor).\n"
+            "O documento deve conter o número do CPF."
+        ),
+        icone="🪪",
+        require_cpf=True,
+    )
+

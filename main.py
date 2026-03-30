@@ -1,31 +1,41 @@
 """
-main.py - Ponto de entrada do DocPopular.
+main.py - Ponto de entrada do DocPopular (PySide6).
 Verifica licença antes de abrir a aplicação principal.
 """
 
 from __future__ import annotations
 
 import sys
+import os
 from pathlib import Path
 
 # Garante que o diretório raiz do projeto está no PYTHONPATH
 sys.path.insert(0, str(Path(__file__).parent))
 
-import customtkinter as ctk
-from core.config import load_settings, save_settings
+from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon
+from core.config import load_settings
 from core.license import LicenseError, get_machine_id, validar_licenca, carregar_licenca
+from ui.qt_styles import GLOBAL_QSS
 
 
-def _verificar_licenca(settings: dict) -> tuple[bool, str]:  # type: ignore[type-arg]
+def get_resource_path(relative_path: str) -> str:
+    """Retorna o caminho absoluto do recurso, compatível com PyInstaller."""
+    if getattr(sys, "frozen", False):
+        base_path = Path(sys._MEIPASS)
+    else:
+        base_path = Path(__file__).parent
+    return str(base_path / relative_path)
+
+
+def _verificar_licenca(settings: dict) -> tuple[bool, str]:
     """
     Retorna (valida, mensagem_erro).
     Tenta validar online primeiro (via ID da máquina), depois offline (via chave salva).
     """
     chave = carregar_licenca(settings)
-    
-    # validar_licenca agora é híbrida: tenta online(mid) e depois offline(key)
     try:
-        # Passamos a chave salva (pode ser vazia para novos clientes online)
         res = validar_licenca(chave or "")
         return res.get("valido", False), ""
     except LicenseError as e:
@@ -35,27 +45,37 @@ def _verificar_licenca(settings: dict) -> tuple[bool, str]:  # type: ignore[type
 
 
 def main() -> None:
-    ctk.set_appearance_mode("dark")
-    ctk.set_default_color_theme("blue")
+    # Habilita High DPI automaticamente
+    os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "1"
+    
+    app = QApplication(sys.argv)
+    app.setApplicationName("DocPopular")
+    app.setOrganizationName("RossSistemas")
+    app.setStyleSheet(GLOBAL_QSS)
+
+    # Ícone
+    icon_path = get_resource_path("assets/icon.ico")
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
+
+    # Registra AppUserModelID no Windows
+    try:
+        import ctypes
+        myappid = 'RossSistemas.DocPopular.Auditor.v1'
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+    except Exception:
+        pass
 
     settings = load_settings()
     valida, msg_erro = _verificar_licenca(settings)
 
     if valida:
-        # Licença OK → abre o app diretamente
         from ui.app import App
-        app = App()
-        app.mainloop()
+        window = App()
+        window.showMaximized()
     else:
-        # Sem licença ou erro → abre tela de ativação dinâmica
         from ui.screens.license_screen import LicenseScreen
-
-        def _abrir_app() -> None:
-            from ui.app import App
-            app = App()
-            app.mainloop()
-
-        # Determina o estado baseado na mensagem de erro
+        
         estado = "padrao"
         if "novo" in msg_erro.lower():
             estado = "novo"
@@ -63,9 +83,11 @@ def main() -> None:
             estado = "expirado"
         elif "inativa" in msg_erro.lower():
             estado = "inativo"
+        
+        window = LicenseScreen(settings, estado=estado, msg_extra=msg_erro if estado == "padrao" else "")
+        window.show()
 
-        screen = LicenseScreen(settings, _abrir_app, estado=estado, msg_extra=msg_erro if estado == "padrao" else "")
-        screen.mainloop()
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":

@@ -25,8 +25,20 @@ installer_meta/
 CPFs/
 output/
 settings.json
+usage.json
+.app_key
 license.key
 *.pdf
-
+docpopular.db
+*.db
+.env
 # Supabase login
 licences_supabase/
+
+# Agent
+.agent/
+.agent_ross/
+
+#claude
+.claude/
+.claude_ross/

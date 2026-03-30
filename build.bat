@@ -16,7 +16,17 @@ taskkill /F /IM DocPopular.exe /T >nul 2>&1
 taskkill /F /IM ISCC.exe /T >nul 2>&1
 timeout /t 2 /nobreak >nul
 
-REM Limpa a pasta installer para evitar erros de lock
+REM Limpa pastas de build anteriores para evitar erros de permissao
+if exist build (
+    echo [+] Limpando pasta build anterior...
+    rmdir /s /q build >nul 2>&1
+)
+if exist dist (
+    echo [+] Limpando pasta dist anterior...
+    rmdir /s /q dist >nul 2>&1
+)
+
+REM Limpa a pasta installer para novos artefatos
 if exist installer (
     echo [+] Limpando pasta installer...
     del /q installer\* >nul 2>&1
@@ -29,7 +39,7 @@ for /f %%I in ('python -c "from version import APP_VERSION; print(APP_VERSION)"'
 echo [+] Versao detectada: v%APP_VERSION%
 echo.
 
-echo [1/2] Compilando o aplicativo com PyInstaller...
+echo [1/4] Compilando o aplicativo com PyInstaller...
 python -m PyInstaller --clean --noconfirm DocPopular.spec
 if errorlevel 1 (
     echo ERRO: falha ao gerar o aplicativo.
@@ -38,7 +48,7 @@ if errorlevel 1 (
 echo     OK - dist\DocPopular\
 
 echo.
-echo [2/2] Gerando instalador com Inno Setup...
+echo [2/4] Gerando instalador com Inno Setup...
 python _gerar_iss.py
 
 REM Procura o compilador do Inno Setup
@@ -60,7 +70,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo [3/3] Criando pacote ZIP para auto-update...
+echo [3/4] Criando pacote ZIP para auto-update...
 timeout /t 2 /nobreak >nul
 set ZIP_BASE_NAME=DocPopular
 if exist "installer\%ZIP_BASE_NAME%.zip" del "installer\%ZIP_BASE_NAME%.zip"
@@ -72,16 +82,32 @@ if errorlevel 1 (
 echo     OK - installer\%ZIP_BASE_NAME%.zip (v%APP_VERSION%)
 
 echo.
+echo [4/5] Finalizando Metadados de Segurança...
+python scripts\finalize_release.py
+if errorlevel 1 (
+    echo ERRO: falha ao gerar assinaturas SHA256.
+    pause & exit /b 1
+)
+
+echo.
+echo [5/5] Limpeza pos-build...
+echo [+] Removendo pastas temporarias (build/dist)...
+rmdir /s /q build >nul 2>&1
+rmdir /s /q dist >nul 2>&1
+echo     Concluido.
+
+echo.
 echo ============================================================
-echo   BUILD COMPLETO!
+echo   BUILD COMPLETO E ASSINADO!
 echo ============================================================
 echo.
 echo  Instalador:  installer\DocPopular_Setup_v%APP_VERSION%.exe
 echo  Auto-update: installer\DocPopular.zip
+echo  Metadata:    version.json (Hashes Atualizados!)
 echo.
 echo  IMPORTANTE: 
 echo  1. Envie o .exe para novos clientes.
-echo  2. Carregue o .zip no GitHub Releases como 'DocPopular.zip'
-echo     para que os clientes atuais recebam a v%APP_VERSION% automaticamente.
+echo  2. Carregue o .zip E o arquivo version.json no GitHub Releases 
+echo     como 'DocPopular.zip' para assegurar atualizacoes autenticadas.
 echo ============================================================
 pause

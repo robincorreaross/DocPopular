@@ -18,9 +18,13 @@ import uuid
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-# ─── Chave secreta (hardcoded — não compartilhe este código) ─────────────────
-# Altere esta chave para uma string única e secreta antes de distribuir o app.
-_SECRET_KEY = b"DocPopular@License#2026$Ross&Seguranca_PFPB!"
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# ─── Chave secreta (Protegida) ───────────────────────────────────────────────
+# Carrega do arquivo .env. Em falha (ambiente não configurado), usa a de fallback.
+_SECRET_KEY = os.environ.get("LICENSE_SECRET_KEY", "DocPopular@License#2026$Ross&Seguranca_PFPB!").encode()
 
 
 # ─── Machine ID ──────────────────────────────────────────────────────────────
@@ -133,7 +137,6 @@ def verificar_licenca_online(machine_id: str) -> Optional[dict]:
                 pass
             
         if not all([supabase_url, supabase_key, supabase_table]):
-            print("[DEBUG] Configurações do Supabase não encontradas no version.py")
             return None
         
         mid_clean = machine_id.strip().upper()
@@ -144,16 +147,15 @@ def verificar_licenca_online(machine_id: str) -> Optional[dict]:
         url = f"{supabase_url}/rest/v1/{supabase_table}?{query_params}"
         
         headers = {
-            'apikey': supabase_key,
+            'apikey': str(supabase_key),
             'Authorization': f'Bearer {supabase_key}',
             'Content-Type': 'application/json',
             'Prefer': 'return=representation'
         }
         
-        print(f"[DEBUG] Tentando conexão Supabase: {url}")
         req = urllib.request.Request(url, headers=headers, method="GET")
         
-        with urllib.request.urlopen(req, timeout=15) as response:
+        with urllib.request.urlopen(req, timeout=30) as response:
             if response.getcode() == 200:
                 rows = json.loads(response.read().decode())
                 
@@ -182,10 +184,9 @@ def verificar_licenca_online(machine_id: str) -> Optional[dict]:
                         expiry_date = datetime.strptime(date_clean, "%Y-%m-%d").date()
                         display_exp = expiry_date.strftime("%d/%m/%Y")
                     except Exception as e:
-                        print(f"[DEBUG] Erro ao parsear data {exp_str}: {e}")
+                        pass
                 
                 if expiry_date and date.today() > expiry_date:
-                    print(f"[DEBUG] Licença ONLINE expirou em {expiry_date}")
                     raise LicenseError("Sua licença expirou. Entre em contato para renovar.")
                 
                 # 2. ATUALIZAÇÃO: Gravar Last Login
@@ -195,15 +196,14 @@ def verificar_licenca_online(machine_id: str) -> Optional[dict]:
                     update_req = urllib.request.Request(update_url, data=update_data, headers=headers, method="PATCH")
                     with urllib.request.urlopen(update_req, timeout=5) as u_res:
                         if u_res.getcode() in (200, 204):
-                            print(f"[DEBUG] Last login atualizado para {mid_clean}")
+                            pass
                 except Exception as ex:
-                    print(f"[DEBUG] Erro ao atualizar last login (não crítico): {ex}")
+                    pass
 
                 dias_restantes = 8888 # Representa vitalício se None
                 if expiry_date:
                     dias_restantes = (expiry_date - date.today()).days
                     
-                print(f"[DEBUG] Licença ONLINE validada com sucesso para {data.get('name')}")
                 return {
                     "valido": True,
                     "expiry": display_exp,
@@ -214,13 +214,14 @@ def verificar_licenca_online(machine_id: str) -> Optional[dict]:
                     "metodo": "online"
                 }
             else:
-                print(f"[DEBUG] Supabase retornou código HTTP {response.getcode()}")
+                pass
     except LicenseError:
         raise
     except Exception as e:
-        print(f"[DEBUG] Erro crítico na validação Supabase: {e}")
         import traceback
         traceback.print_exc()
+        if "timeout" in str(e).lower() or "timed out" in str(e).lower():
+            raise LicenseError("O servidor demorou muito para responder. O sistema pode estar em inicialização, aguarde alguns segundos e tente novamente.")
     return None
 
 

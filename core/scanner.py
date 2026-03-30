@@ -1,188 +1,195 @@
 """
-scanner.py - Interface com scanners via WIA (Windows Image Acquisition).
-Permite listar, selecionar e escanear com dispositivos WIA.
-Fallback: importar imagens de arquivos locais.
+scanner.py - Motor de digitalização resiliente (Sincronizado com RossPDFEditor).
+Suporta WIA (Windows Image Acquisition) e Modo Simulado para testes locais.
 """
 
 from __future__ import annotations
 
 import io
-from typing import List, Optional
-
-import pythoncom  # type: ignore[import-untyped]
+import os
+import datetime
+import threading
+from pathlib import Path
+from typing import List, Optional, Callable, Tuple
 from PIL import Image
 
+try:
+    import win32com.client
+    import pythoncom
+except ImportError:
+    win32com = None
+    pythoncom = None
 
-def list_scanners() -> List[str]:
-    """
-    Lista os scanners disponíveis via WIA.
-    Retorna lista de nomes de dispositivos.
-    """
-    pythoncom.CoInitialize()
-    scanners: List[str] = []
+from core import logger
+
+# GUID do formato PNG para o WIA
+WIA_FORMAT_PNG = "{B96B3CAB-0728-11D3-9D7B-0000F81EF32E}"
+
+def get_debug_log_path() -> Path:
+    import sys
     try:
-        import win32com.client  # type: ignore[import-untyped]
-        wia = win32com.client.Dispatch("WIA.DeviceManager")
-        for device_info in wia.DeviceInfos:
-            if device_info.Type == 1:  # Scanner type
-                name = device_info.Properties("Name").Value
-                scanners.append(name)
-    except Exception:  # noqa: BLE001
-        pass
-    return scanners
-
-
-def _get_wia_device(device_identifier: str) -> tuple[object | None, Optional[str]]:
-    """
-    Obtém o objeto de dispositivo WIA pelo nome ou DeviceID.
-    Retorna (device_obj, error_msg).
-    """
-    pythoncom.CoInitialize()
-    try:
-        import win32com.client  # type: ignore[import-untyped]
-        wia = win32com.client.Dispatch("WIA.DeviceManager")
-        for device_info in wia.DeviceInfos:
-            # Tenta casar por Name ou DeviceID (mais persistente)
-            name = device_info.Properties("Name").Value
-            dev_id = device_info.DeviceID
-            
-            if name == device_identifier or dev_id == device_identifier:
-                try:
-                    return device_info.Connect(), None
-                except Exception as e:
-                    return None, f"Erro no Connect(): {e}"
-        return None, "Scanner não encontrado na lista do Windows."
-    except Exception as e:
-        return None, f"Erro no DeviceManager: {e}"
-
-
-def scan_page(device_name: str, dpi: int = 200) -> tuple[Optional[Image.Image], Optional[str]]:
-    """
-    Escaneia uma página usando WIA.
-    Retorna (imagem PIL, None) em caso de sucesso ou (None, erro_str) em caso de falha.
-    """
-    try:
-        device, err_conn = _get_wia_device(device_name)
-        if device is None:
-            return None, err_conn or "Não foi possível conectar ao scanner selecionado."
-
-        # Busca o item de digitalização correto (WIA 2.0 geralmente usa Items[1], mas scanners de rede podem variar)
-        scan_item = None
-        if device.Items.Count > 0:
-            # Tenta encontrar um item que tenha propriedades de resolução (típico de itens de scan)
-            for i in range(1, device.Items.Count + 1):
-                try:
-                    item = device.Items[i]
-                    # Se conseguirmos acessar a resolução, este provavelmente é o item de flatbed/feeder
-                    item.Properties("Horizontal Resolution")
-                    scan_item = item
-                    break
-                except Exception:
-                    continue
-        
-        if not scan_item:
-            # Fallback para o primeiro item se a busca falhar
-            try:
-                scan_item = device.Items[1]
-            except Exception:
-                return None, "O scanner não possui itens de digitalização disponíveis."
-
-        try:
-            scan_item.Properties("Horizontal Resolution").Value = dpi
-            scan_item.Properties("Vertical Resolution").Value = dpi
-        except Exception as e:
-            print(f"[Scanner] Aviso: Não foi possível definir DPI: {e}")
-
-        # JPEG GUID
-        image_file = scan_item.Transfer("{B96B3CAB-0728-11D3-9D7B-0000F81EF32E}")
-        data = bytes(image_file.FileData.BinaryData)
-        img = Image.open(io.BytesIO(data))
-        return img.convert("RGB"), None
-
-    except Exception as e:
-        error_msg = str(e)
-        if "0x80210015" in error_msg:
-            error_msg = "Scanner offline ou desconectado (0x80210015)."
-        elif "0x8021001A" in error_msg:
-            error_msg = "Scanner ocupado ou em uso por outro programa (0x8021001A)."
-        
-        print(f"[Scanner] Erro ao escanear: {error_msg}")
-        return None, error_msg
-
-
-def scan_with_dialog() -> Optional[Image.Image]:
-    """
-    Abre o diálogo nativo do WIA para selecionar scanner e escanear.
-    Útil como fallback quando o scanner não está pré-configurado.
-    """
-    pythoncom.CoInitialize()
-    try:
-        import win32com.client  # type: ignore[import-untyped]
-        dialog = win32com.client.Dispatch("WIA.CommonDialog")
-        image_file = dialog.ShowAcquireImage(
-            1, 1, 4,
-            "{B96B3CAB-0728-11D3-9D7B-0000F81EF32E}",
-            False, True, False,
-        )
-        if image_file:
-            data = bytes(image_file.FileData.BinaryData)
-            img = Image.open(io.BytesIO(data))
-            return img.convert("RGB")
-    except Exception as e:
-        print(f"[Scanner] Erro no diálogo WIA: {e}")
-    return None
-
-
-def import_from_file(parent_window: object = None) -> Optional[Image.Image]:
-    """
-    Abre caixa de diálogo para importar imagem de arquivo (JPEG/PNG).
-    Retorna imagem PIL ou None se cancelado.
-    """
-    import tkinter as tk
-    from tkinter import filedialog
-
-    root: object
-    if parent_window is None:
-        root = tk.Tk()
-        tk.Tk.withdraw(root)  # type: ignore[arg-type]
-    else:
-        root = parent_window
-
-    filepath: str = filedialog.askopenfilename(
-        title="Selecionar Imagem",
-        filetypes=[
-            ("Imagens", "*.jpg *.jpeg *.png *.bmp *.tiff *.tif"),
-            ("JPEG", "*.jpg *.jpeg"),
-            ("PNG", "*.png"),
-            ("Todos os arquivos", "*.*"),
-        ],
-    )
-
-    if parent_window is None:
-        tk.Tk.destroy(root)  # type: ignore[arg-type]
-
-    if filepath:
-        try:
-            img = Image.open(filepath)
-            return img.convert("RGB")
-        except Exception as e:
-            print(f"[Scanner] Erro ao importar arquivo: {e}")
-
-    return None
-
-
-def optimize_image(img: Image.Image, max_size: int = 2480) -> Image.Image:
-    """
-    Otimiza a imagem para o PDF: redimensiona mantendo proporção se necessário.
-    """
-    img = img.convert("RGB")
-    w, h = img.size
-    if max(w, h) > max_size:
-        if w > h:
-            new_w = max_size
-            new_h = int(h * max_size / w)
+        if getattr(sys, 'frozen', False):
+            base_dir = os.path.dirname(sys.executable)
         else:
-            new_h = max_size
-            new_w = int(w * max_size / h)
-        img = img.resize((new_w, new_h), Image.LANCZOS)
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        p = Path(base_dir) / "scanner_debug.log"
+        # Garante que o arquivo existe
+        if not p.exists():
+            with open(p, "w", encoding="utf-8") as f: f.write("--- LOG INICIADO ---\n")
+        return p
+    except Exception:
+        import tempfile
+        return Path(tempfile.gettempdir()) / "DocPopular_scanner_debug.log"
+
+def log_scanner_step(msg: str):
+    """Grava log físico e imprime no console para debug imediato."""
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    line = f"[{now}] {msg}"
+    # print(f"📷 SCAN {msg}") # Desativado em produção
+    try:
+        path = get_debug_log_path()
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception as e:
+        pass
+
+class ScannerEngine:
+    """Motor de digitalização baseado em classe para isolamento de thread (padrão RossPDFEditor)."""
+    
+    def __init__(self):
+        self._lock = threading.Lock()
+
+    def list_scanners(self) -> List[str]:
+        """Lista scanners WIA disponíveis. Retorna simulador se as bibliotecas falharem."""
+        scanners = ["Simulador DocPopular"]
+        
+        if not pythoncom or not win32com:
+            return scanners
+            
+        try:
+            pythoncom.CoInitialize()
+            try:
+                manager = win32com.client.Dispatch("WIA.DeviceManager")
+                for device in manager.DeviceInfos:
+                    if device.Type == 1:  # 1 = Scanner
+                        name = device.Properties("Name").Value
+                        scanners.append(name)
+            finally:
+                pythoncom.CoUninitialize()
+        except Exception as e:
+            log_scanner_step(f"Erro ao listar scanners WIA: {e}")
+            
+        return list(dict.fromkeys(scanners)) # Remove duplicatas mantendo ordem
+
+    def scan(self, 
+             device_name: str, 
+             callback: Callable[[Optional[Image.Image], Optional[str]], None],
+             status_callback: Callable[[str], None],
+             dpi: int = 200):
+        """Executa o scan em uma thread separada, reportando progresso."""
+        
+        def run_scan():
+            log_scanner_step(f"=== INICIANDO PROCESSO DE SCAN: {device_name or 'Simulador DocPopular'} ===")
+            status_callback("Iniciando...")
+            
+            # --- MODO SIMULADOR ---
+            if device_name == "Simulador DocPopular" or not device_name:
+                status_callback("Simulando aquisição...")
+                import time
+                time.sleep(1.0)
+                # Gera uma imagem sólida cinza claro (estilo papel digitalizado)
+                img = Image.new('RGB', (1654, 2339), color=(248, 248, 248))
+                log_scanner_step("Simulador: Imagem gerada com sucesso.")
+                status_callback("Scan simulado concluído.")
+                callback(img, None)
+                return
+
+            if not pythoncom or not win32com:
+                err = "Drivers WIA/COM não instalados no sistema."
+                log_scanner_step(f"ERROR: {err}")
+                callback(None, err)
+                return
+
+            img = None
+            error_msg = None
+            
+            try:
+                log_scanner_step("1. Inicializando COM...")
+                pythoncom.CoInitialize()
+                
+                log_scanner_step(f"2. Conectando ao dispositivo: {device_name}")
+                status_callback("Conectando...")
+                manager = win32com.client.Dispatch("WIA.DeviceManager")
+                
+                target_device = None
+                scanners_found = []
+                for info in manager.DeviceInfos:
+                    try:
+                        name = info.Properties("Name").Value
+                        scanners_found.append(name)
+                        # Busca flexível: ignore case e substring
+                        if device_name.lower() in name.lower() or name.lower() in device_name.lower():
+                            target_device = info.Connect()
+                            log_scanner_step(f"   MATCH ENCONTRADO: '{name}' corresponde a '{device_name}'")
+                            break
+                    except:
+                        continue
+                
+                if not target_device:
+                    msg = f"Scanner '{device_name}' não encontrado.\nScanners detectados: {', '.join(scanners_found) if scanners_found else 'Nenhum'}"
+                    raise Exception(msg)
+                
+                log_scanner_step("3. Configurando parâmetros (DPI, Color)...")
+                item = target_device.Items(1)
+                
+                # Configura DPI (Horizontal e Vertical)
+                for prop_id in [6147, 6148]:
+                    try: item.Properties(prop_id).Value = dpi
+                    except: pass
+                
+                # Configura modo colorido (1 = Color, 2 = Gray, 4 = B&W)
+                try: item.Properties(6146).Value = 1
+                except: pass
+
+                log_scanner_step("4. Solicitando transferência de imagem...")
+                status_callback("Digitalizando...")
+                
+                image_wia = item.Transfer(WIA_FORMAT_PNG)
+                
+                log_scanner_step("5. Convertendo dados WIA para PIL...")
+                status_callback("Processando...")
+                image_bytes = bytes(image_wia.FileData.BinaryData)
+                img = Image.open(io.BytesIO(image_bytes))
+                img.load() # Garante que os dados foram lidos
+                
+                log_scanner_step("6. Finalizado com sucesso.")
+                status_callback("Concluído!")
+                
+            except Exception as e:
+                error_msg = str(e)
+                log_scanner_step(f"FALHA CRÍTICA NO SCAN: {error_msg}")
+            finally:
+                try:
+                    pythoncom.CoUninitialize()
+                except:
+                    pass
+                
+            callback(img, error_msg)
+
+        # Inicia a thread
+        threading.Thread(target=run_scan, daemon=True).start()
+
+def optimize_image(img: Image.Image) -> Image.Image:
+    """Otimiza a imagem para economia de espaço mantendo legibilidade."""
+    if img.mode != 'RGB':
+        img = img.convert('RGB')
+    
+    # Redimensiona se for maior que o necessário para IA (máximo 2000px na largura)
+    if img.width > 2000:
+        ratio = 2000 / img.width
+        new_size = (2000, int(img.height * ratio))
+        img = img.resize(new_size, Image.Resampling.LANCZOS)
+    
     return img

@@ -1,7 +1,8 @@
 {
-  "version": "1.0.0",
-  "release_date": "2026-02-27",
+  "version": "2.0.0",
+  "release_date": "2026-03-28",
   "download_zip_url": "https://github.com/robincorreaross/DocPopular/releases/latest/download/DocPopular.zip",
+  "download_sha256": "e7dd8eafe111903e604cc2a45b16ed235b0291124814567d233eb6bc833d211b",
   "download_url": "https://github.com/robincorreaross/DocPopular/releases/latest",
   "changelog": [
     "Initial release of DocPopular (Fork from FarmaPop_IA)",
@@ -10,4 +11,3 @@
   ],
   "mandatory": true
 }
-

@@ -40,7 +40,7 @@ def _parse_version(v: str) -> tuple[int, ...]:
 # ─── Verificação remota ───────────────────────────────────────────────────────
 
 def verificar_atualizacao(
-    on_update_available: Callable[[str, List[str], bool, str], None],
+    on_update_available: Callable[[str, List[str], bool, str, str], None],
     timeout: int = 6,
 ) -> None:
     """
@@ -60,9 +60,10 @@ def verificar_atualizacao(
             changelog: List[str] = data.get("changelog", [])
             mandatory: bool = bool(data.get("mandatory", False))
             zip_url: str = data.get("download_zip_url", DOWNLOAD_ZIP_URL)
+            expected_sha256: str = data.get("download_sha256", "")
 
             if _parse_version(remote_version) > _parse_version(APP_VERSION):
-                on_update_available(remote_version, changelog, mandatory, zip_url)
+                on_update_available(remote_version, changelog, mandatory, zip_url, expected_sha256)
 
         except (URLError, OSError, json.JSONDecodeError, Exception):
             pass  # Silencioso: sem internet, servidor fora, etc.
@@ -89,6 +90,7 @@ def baixar_e_instalar(
     on_progress: Callable[[int, str], None],
     on_success: Callable[[], None],
     on_error: Callable[[str], None],
+    expected_sha256: str = "",
 ) -> None:
     """
     Baixa o ZIP da nova versão, extrai e substitui os arquivos do app.
@@ -99,6 +101,7 @@ def baixar_e_instalar(
         on_progress: chamado com (percentual 0-100, mensagem)
         on_success: chamado quando concluído com sucesso
         on_error: chamado com mensagem de erro em caso de falha
+        expected_sha256: Hash criptográfico SHA256 esperado (OWASP A08 mitigation)
     """
     def _run() -> None:
         tmp_dir = Path(tempfile.mkdtemp(prefix="doc_update_"))
@@ -117,6 +120,21 @@ def baixar_e_instalar(
                     on_progress(5 + pct, f"Baixando... {mb_done:.1f} / {mb_total:.1f} MB")
 
             urlretrieve(zip_url, zip_path, reporthook=report_hook)
+            
+            # ── 1.5. Verificação de Integridade (Hash SHA256) ─────────────────
+            import hashlib
+            if expected_sha256:
+                on_progress(60, "Verificando integridade e segurança do arquivo (SHA256)...")
+                hasher = hashlib.sha256()
+                with open(zip_path, "rb") as f:
+                    for chunk in iter(lambda: f.read(4096), b""):
+                        hasher.update(chunk)
+                file_hash = hasher.hexdigest().lower()
+                
+                if file_hash != expected_sha256.lower():
+                    # Falha Crítica de Segurança: Supply Chain Attack / Adulteração
+                    raise Exception("A verificação de segurança falhou (SHA256 Hash Mismatch). O arquivo baixado pode estar adulterado ou corrompido.")
+
             on_progress(65, "Download concluído. Extraindo arquivos...")
 
             # ── 2. Extração ───────────────────────────────────────────────────

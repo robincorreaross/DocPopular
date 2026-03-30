@@ -1,217 +1,227 @@
 """
-app.py - Janela principal do DocPopular com navegação por abas laterais.
+app.py - Janela principal do DocPopular (PySide6) com navegação por sidebar.
 """
 
 from __future__ import annotations
 
-from typing import Any, List
-
 import os
 import sys
-import ctypes
+import webbrowser
+import urllib.parse
+from typing import Any, List, Optional
 from pathlib import Path
-import customtkinter as ctk
+
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QIcon, QFont, QPixmap
+from PySide6.QtWidgets import (
+    QMainWindow, QWidget, QFrame, QVBoxLayout, QHBoxLayout,
+    QLabel, QPushButton, QStackedWidget, QMessageBox,
+    QProgressBar, QSizePolicy, QApplication,
+)
+
 from core.config import load_settings, save_settings
 from version import APP_VERSION
+from ui.qt_styles import COLORS
+from core.sync_manager import sync_manager
+
 
 def get_resource_path(relative_path: str) -> str:
-    """Retorna o caminho absoluto do recurso, compatível com PyInstaller."""
-    if getattr(sys, "frozen", False):
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
         base_path = Path(sys._MEIPASS)
     else:
         base_path = Path(__file__).parent.parent
     return str(base_path / relative_path)
 
 
-
-class App(ctk.CTk):
+class App(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        # Registra o AppUserModelID para o Windows mostrar o ícone na Barra de Tarefas
-        try:
-            myappid = 'RossSistemas.DocPopular.Auditor.v1' # Identificador único
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
-        except Exception:
-            pass
+        self.setWindowTitle("DocPopular — Auditor de Documentos PFPB")
+        self.setMinimumSize(1000, 650)
+        self.resize(1150, 720)
 
-        self.title("DocPopular — Auditor de Documentos PFPB")
-        self.geometry("1150x720")
-        self.minsize(1000, 650)
-        ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("blue")
-
-        # Define o ícone da janela
-        try:
-            icon_path = get_resource_path("assets/icon.ico")
-            if os.path.exists(icon_path):
-                self.iconbitmap(icon_path)
-        except Exception as e:
-            print(f"[DEBUG] Erro ao carregar ícone da janela: {e}")
+        # Ícone
+        icon_path = get_resource_path("assets/icon.ico")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
 
         self.settings = load_settings()
         self.current_transaction = None
-        self._update_zip_url: str = ""  # URL do ZIP da nova versão (preenchido ao detectar update)
-        self._license_cache: dict | None = None  # Cache global para evitar lag na UI (v1.1.7)
+        self._update_zip_url: str = ""
+        self._license_cache: dict | None = None
 
         self._build_layout()
         self.show_home()
 
-        # Verificações em background após 1 segundo
-        self.after(1000, self._iniciar_verificacao_update)
-        self.after(1500, self._verificar_expiracao_proxima)
+        # Verificações em background
+        QTimer.singleShot(1000, self._iniciar_verificacao_update)
+        QTimer.singleShot(1500, self._verificar_expiracao_proxima)
+        
+        # Inicia o Sincronizador com Supabase (intervalo de 30s)
+        sync_manager.start()
 
-    # ── Layout ───────────────────────────────────────────────────────────────────
+    def update_settings(self, new_settings: dict) -> None:
+        """Salva as novas configurações no arquivo e atualiza o estado em memória."""
+        from core.config import save_settings
+        self.settings = new_settings
+        save_settings(self.settings)
+
+
+    # ── Layout ─────────────────────────────────────────────────────────────────
 
     def _build_layout(self) -> None:
-        """Monta o layout base: sidebar + área de conteúdo."""
-        self.grid_columnconfigure(1, weight=1)
-        self.grid_rowconfigure(1, weight=1)  # row 0 = banner de update
+        central = QWidget()
+        central.setObjectName("central")
+        self.setCentralWidget(central)
 
-        # ── Banner de Alerta de Expiração (Novo v1.1.4) ──────────────────────
-        self._expiration_banner = ctk.CTkFrame(self, height=0, fg_color="#FF9800", corner_radius=0)
-        self._expiration_banner.grid(row=0, column=0, columnspan=2, sticky="ew")
-        self._expiration_banner.grid_remove() # Inicia escondido
+        root_layout = QVBoxLayout(central)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
 
-        # Banner de atualização (oculto inicialmente)
-        self._update_banner = ctk.CTkFrame(self, fg_color="#0D2B0D", height=42, corner_radius=0)
-        self._update_banner.grid(row=0, column=0, columnspan=2, sticky="ew")
-        self._update_banner.grid_remove()  # oculto até haver update
+        # ── Banner de Expiração ────────────────────────────────────────────
+        self._expiration_banner = QFrame()
+        self._expiration_banner.setStyleSheet(f"background-color: {COLORS['warning']};")
+        self._expiration_banner.setFixedHeight(0)
+        self._expiration_banner.hide()
+        self._exp_banner_layout = QHBoxLayout(self._expiration_banner)
+        self._exp_banner_layout.setContentsMargins(16, 0, 16, 0)
+        root_layout.addWidget(self._expiration_banner)
 
-        # ── Sidebar ──────────────────────────────────────────────────────────
-        self.sidebar = ctk.CTkFrame(self, width=200, corner_radius=0, fg_color="#0D1B2A")
-        self.sidebar.grid(row=1, column=0, sticky="nsew")
-        self.sidebar.grid_rowconfigure(10, weight=1)
+        # ── Banner de Update ───────────────────────────────────────────────
+        self._update_banner = QFrame()
+        self._update_banner.setStyleSheet("background-color: #0D2B0D;")
+        self._update_banner.setFixedHeight(42)
+        self._update_banner.hide()
+        self._update_banner_layout = QHBoxLayout(self._update_banner)
+        self._update_banner_layout.setContentsMargins(16, 0, 16, 0)
+        root_layout.addWidget(self._update_banner)
 
-        logo_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        logo_frame.grid(row=0, column=0, padx=16, pady=(24, 8), sticky="ew")
+        # ── Body (Sidebar + Content) ──────────────────────────────────────
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        root_layout.addLayout(body, stretch=1)
 
-        ctk.CTkLabel(logo_frame, text="🏥", font=ctk.CTkFont(size=32)).pack()
-        ctk.CTkLabel(
-            logo_frame,
-            text="DocPopular",
-            font=ctk.CTkFont(size=16, weight="bold"),
-            text_color="#4FC3F7",
-        ).pack()
-        ctk.CTkLabel(
-            logo_frame,
-            text="Auditor PFPB",
-            font=ctk.CTkFont(size=10),
-            text_color="#78909C",
-        ).pack()
+        # ── Sidebar ───────────────────────────────────────────────────────
+        self.sidebar = QFrame()
+        self.sidebar.setObjectName("sidebar")
+        self.sidebar.setFixedWidth(260)  # Aumentado de 200 para 260 para evitar cortes
+        sidebar_layout = QVBoxLayout(self.sidebar)
+        sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        sidebar_layout.setSpacing(0)
 
-        ctk.CTkFrame(self.sidebar, height=1, fg_color="#1E3450").grid(
-            row=1, column=0, sticky="ew", padx=16, pady=8
-        )
+        # Logo
+        logo_frame = QWidget()
+        logo_layout = QVBoxLayout(logo_frame)
+        logo_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo_layout.setContentsMargins(16, 24, 16, 8)
 
-        self.btn_home = ctk.CTkButton(
-            self.sidebar,
-            text="  📋  Nova Transação",
-            font=ctk.CTkFont(size=13),
-            anchor="w",
-            corner_radius=8,
-            fg_color="transparent",
-            hover_color="#1E3A5F",
-            command=self.show_home,
-        )
-        self.btn_home.grid(row=2, column=0, padx=12, pady=4, sticky="ew")
+        lbl_icon = QLabel("🏥")
+        lbl_icon.setFont(QFont("Segoe UI Emoji", 32))
+        lbl_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo_layout.addWidget(lbl_icon)
 
-        self.btn_settings = ctk.CTkButton(
-            self.sidebar,
-            text="  ⚙️  Configurações",
-            font=ctk.CTkFont(size=13),
-            anchor="w",
-            corner_radius=8,
-            fg_color="transparent",
-            hover_color="#1E3A5F",
-            command=self.show_settings,
-        )
-        self.btn_settings.grid(row=5, column=0, padx=12, pady=4, sticky="ew")
+        lbl_name = QLabel("DocPopular")
+        lbl_name.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
+        lbl_name.setStyleSheet(f"color: {COLORS['accent']};")
+        lbl_name.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo_layout.addWidget(lbl_name)
 
+        lbl_sub = QLabel("Auditor PFPB")
+        lbl_sub.setFont(QFont("Segoe UI", 11))
+        lbl_sub.setStyleSheet(f"color: {COLORS['text_label']};")
+        lbl_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo_layout.addWidget(lbl_sub)
 
+        sidebar_layout.addWidget(logo_frame)
 
-        self.btn_search_doc = ctk.CTkButton(
-            self.sidebar,
-            text="  🔍  Procurar Documento",
-            font=ctk.CTkFont(size=13),
-            anchor="w",
-            corner_radius=8,
-            fg_color="transparent",
-            hover_color="#1E3A5F",
-            command=self.show_search_doc,
-        )
-        self.btn_search_doc.grid(row=3, column=0, padx=12, pady=4, sticky="ew")
+        # Separador
+        sep = QFrame()
+        sep.setObjectName("separator")
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFixedHeight(1)
+        sep.setStyleSheet(f"background-color: {COLORS['separator']};")
+        sidebar_layout.addWidget(sep)
 
-        self.btn_help = ctk.CTkButton(
-            self.sidebar,
-            text="  ❓  Ajuda e Suporte",
-            font=ctk.CTkFont(size=13),
-            anchor="w",
-            corner_radius=8,
-            fg_color="transparent",
-            hover_color="#1E3A5F",
-            command=self.show_help,
-        )
-        self.btn_help.grid(row=6, column=0, padx=12, pady=4, sticky="ew")
+        # Botões da Sidebar
+        self._sidebar_buttons: list[QPushButton] = []
 
-        # Rodapé com versão
-        ctk.CTkLabel(
-            self.sidebar,
-            text=f"v{APP_VERSION}",
-            font=ctk.CTkFont(size=10),
-            text_color="#B0BEC5",
-        ).grid(row=11, column=0, padx=16, pady=12, sticky="sw")
+        self.btn_home = self._make_sidebar_btn("  📋  Nova Transação", lambda: self._confirmar_navegacao(self.show_home))
+        sidebar_layout.addWidget(self.btn_home)
 
-        # ── Área de conteúdo ─────────────────────────────────────────────────
-        self.content_frame = ctk.CTkFrame(self, fg_color="#0A1628", corner_radius=0)
-        self.content_frame.grid(row=1, column=1, sticky="nsew")
-        self.content_frame.grid_rowconfigure(0, weight=1)
-        self.content_frame.grid_columnconfigure(0, weight=1)
+        self.btn_search_doc = self._make_sidebar_btn("  🔍  Procurar Documento", lambda: self._confirmar_navegacao(self.show_search_doc))
+        sidebar_layout.addWidget(self.btn_search_doc)
+
+        self.btn_settings = self._make_sidebar_btn("  ⚙️  Configurações", lambda: self._confirmar_navegacao(self.show_settings))
+        sidebar_layout.addWidget(self.btn_settings)
+
+        self.btn_help = self._make_sidebar_btn("  ❓  Ajuda e Suporte", lambda: self._confirmar_navegacao(self.show_help))
+        sidebar_layout.addWidget(self.btn_help)
+
+        # Espaçador
+        sidebar_layout.addStretch(1)
+
+        # Versão
+        lbl_version = QLabel(f"v{APP_VERSION}")
+        lbl_version.setFont(QFont("Segoe UI", 10))
+        lbl_version.setStyleSheet(f"color: #B0BEC5;")
+        lbl_version.setContentsMargins(16, 0, 0, 12)
+        sidebar_layout.addWidget(lbl_version)
+
+        body.addWidget(self.sidebar)
+
+        # ── Área de Conteúdo ──────────────────────────────────────────────
+        self.stack = QStackedWidget()
+        self.stack.setStyleSheet(f"background-color: {COLORS['bg_main']};")
+        body.addWidget(self.stack, stretch=1)
 
         self._current_screen = None
 
-    # ── Sistema de update ────────────────────────────────────────────────────────
+    def _make_sidebar_btn(self, text: str, callback) -> QPushButton:
+        btn = QPushButton(text)
+        btn.setObjectName("sidebar_btn")
+        btn.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setFixedHeight(50)  # Aumentado de 38 para 50 para melhor ergonomia
+        btn.clicked.connect(callback)
+        self._sidebar_buttons.append(btn)
+        return btn
+
+    # ── Sistema de update ────────────────────────────────────────────────────
 
     def _verificar_expiracao_proxima(self) -> None:
-        """Verifica licença online, alimenta o cache e mostra banner se faltar <= 3 dias."""
         try:
             from core.license import validar_licenca, carregar_licenca
             key = carregar_licenca(self.settings)
             info = validar_licenca(key or "")
-            
-            # Alimenta o cache global para as telas (v1.1.7)
             self._license_cache = info
-            
             dias = info.get("dias_restantes", 999)
             if 0 <= dias <= 3:
                 self._mostrar_banner_expiracao(dias)
-        except Exception as e:
-            print(f"[DEBUG] Falha na verificação de expiração/cache: {e}")
+        except Exception:
+            pass
 
     def _mostrar_banner_expiracao(self, dias: int) -> None:
-        """Exibe o banner laranja de aviso de expiração."""
-        for w in self._expiration_banner.winfo_children():
-            w.destroy()
-            
-        self._expiration_banner.grid()
-        
+        # Limpa layout de forma segura
+        while self._exp_banner_layout.count():
+            item = self._exp_banner_layout.takeAt(0)
+            if item:
+                w = item.widget()
+                if w: w.deleteLater()
+
+        self._expiration_banner.setFixedHeight(40)
+        self._expiration_banner.show()
+
         msg = f"⚠️ Sua licença expira em {dias} dia(s)! Clique aqui para renovar agora." if dias > 0 else "⚠️ Sua licença expira HOJE! Renove agora para não parar."
-        
-        btn = ctk.CTkButton(
-            self._expiration_banner,
-            text=msg,
-            font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color="transparent",
-            hover_color="#E68A00",
-            text_color="white",
-            anchor="center",
-            command=self._abrir_whatsapp_renovacao
-        )
-        btn.pack(fill="x", ipady=5)
+
+        btn = QPushButton(msg)
+        btn.setStyleSheet("background: transparent; color: white; font-weight: bold; font-size: 12px; border: none;")
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.clicked.connect(self._abrir_whatsapp_renovacao)
+        self._exp_banner_layout.addWidget(btn)
 
     def _abrir_whatsapp_renovacao(self) -> None:
-        import webbrowser
-        import urllib.parse
         from core.license import get_machine_id
         mid = get_machine_id()
         msg = f"Olá Robinson, minha licença do DocPopular está vencendo e gostaria de renovar. Meu ID: {mid}"
@@ -219,184 +229,189 @@ class App(ctk.CTk):
         webbrowser.open(url)
 
     def _iniciar_verificacao_update(self) -> None:
-        """Dispara a verificação de update em background."""
         try:
             from core.updater import verificar_atualizacao
             verificar_atualizacao(
-                on_update_available=lambda v, c, m, z: self.after(
-                    0, lambda: self._mostrar_banner_update(v, c, m, z)
+                on_update_available=lambda v, c, m, z, sha="": QTimer.singleShot(
+                    0, lambda: self._mostrar_banner_update(v, c, m, z, sha)
                 )
             )
         except Exception:
-            pass  # Silencioso se o módulo ou rede não estiver disponível
+            pass
 
-    def _mostrar_banner_update(
-        self, nova_versao: str, changelog: List[str], obrigatoria: bool, zip_url: str = ""
-    ) -> None:
-        """Exibe o banner de notificação de update no topo do app."""
-        self._update_zip_url = zip_url  # guarda para uso no download
-        # Limpa o banner anterior
-        for w in self._update_banner.winfo_children():
-            w.destroy()
+    def _mostrar_banner_update(self, nova_versao: str, changelog: List[str], obrigatoria: bool, zip_url: str = "", expected_sha256: str = "") -> None:
+        self._update_zip_url = zip_url
+        self._expected_sha256 = expected_sha256
 
-        # Reaparece o banner
-        self._update_banner.grid()
+        while self._update_banner_layout.count():
+            item = self._update_banner_layout.takeAt(0)
+            if item:
+                w = item.widget()
+                if w: w.deleteLater()
+
+        self._update_banner.show()
 
         emoji = "🚨" if obrigatoria else "🟢"
         tipo = "OBRIGATÓRIA" if obrigatoria else "disponível"
         texto = f"{emoji}  Atualização {tipo}: versão {nova_versao}   —   {changelog[0] if changelog else ''}"
 
-        banner_inner = ctk.CTkFrame(self._update_banner, fg_color="transparent")
-        banner_inner.pack(fill="x", expand=True, padx=16)
-
-        ctk.CTkLabel(
-            banner_inner,
-            text=texto,
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color="#A5D6A7" if not obrigatoria else "#FFCDD2",
-        ).pack(side="left", pady=8)
-
-        ctk.CTkButton(
-            banner_inner,
-            text="⬇️  Baixar agora",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            height=28,
-            width=120,
-            corner_radius=6,
-            fg_color="#2E7D32" if not obrigatoria else "#C62828",
-            hover_color="#388E3C" if not obrigatoria else "#D32F2F",
-            command=self._abrir_download,
-        ).pack(side="right", pady=7)
+        lbl = QLabel(texto)
+        lbl.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        lbl.setStyleSheet(f"color: {'#FFCDD2' if obrigatoria else '#A5D6A7'};")
+        self._update_banner_layout.addWidget(lbl, stretch=1)
 
         if not obrigatoria:
-            ctk.CTkButton(
-                banner_inner,
-                text="✕",
-                font=ctk.CTkFont(size=11),
-                height=28,
-                width=28,
-                corner_radius=6,
-                fg_color="transparent",
-                hover_color="#1E3A5F",
-                text_color="#78909C",
-                command=self._fechar_banner,
-            ).pack(side="right", padx=4, pady=7)
+            btn_close = QPushButton("✕")
+            btn_close.setFixedSize(28, 28)
+            btn_close.setStyleSheet("background: transparent; color: #78909C; border: none; font-size: 11px;")
+            btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn_close.clicked.connect(self._fechar_banner)
+            self._update_banner_layout.addWidget(btn_close)
+
+        btn_dl = QPushButton("⬇️  Baixar agora")
+        btn_dl.setObjectName("btn_primary" if not obrigatoria else "btn_green")
+        btn_dl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        btn_dl.setFixedSize(140, 28)
+        btn_dl.setCursor(Qt.CursorShape.PointingHandCursor)
+        color = "#2E7D32" if not obrigatoria else "#C62828"
+        btn_dl.setStyleSheet(f"background-color: {color}; color: white; border: none; border-radius: 6px;")
+        btn_dl.clicked.connect(self._abrir_download)
+        self._update_banner_layout.addWidget(btn_dl)
 
     def _abrir_download(self) -> None:
-        """Inicia download automático se possível, senão abre browser."""
         if self._update_zip_url:
-            self._mostrar_progresso_download(self._update_zip_url)
+            self._mostrar_progresso_download(self._update_zip_url, getattr(self, "_expected_sha256", ""))
         else:
             from core.updater import abrir_download
             abrir_download()
 
-    def _mostrar_progresso_download(self, zip_url: str) -> None:
-        """Abre janela modal de progresso de download e instala automaticamente."""
+    def _mostrar_progresso_download(self, zip_url: str, expected_sha256: str = "") -> None:
         from core.updater import baixar_e_instalar
+        from PySide6.QtWidgets import QDialog
 
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("Instalando Atualização")
-        dialog.geometry("480x240")
-        dialog.resizable(False, False)
-        dialog.configure(fg_color="#0A1628")
-        dialog.grab_set()  # modal
-        dialog.lift()
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Instalando Atualização")
+        dialog.setFixedSize(480, 240)
+        dialog.setStyleSheet(f"background-color: {COLORS['bg_main']};")
+        dialog.setModal(True)
 
-        # Centraliza
-        dialog.update_idletasks()
-        x = self.winfo_x() + (self.winfo_width() - 480) // 2
-        y = self.winfo_y() + (self.winfo_height() - 240) // 2
-        dialog.geometry(f"480x240+{x}+{y}")
+        layout = QVBoxLayout(dialog)
 
-        ctk.CTkLabel(
-            dialog,
-            text="⬇️  Baixando atualização...",
-            font=ctk.CTkFont(size=16, weight="bold"),
-            text_color="#4FC3F7",
-        ).pack(pady=(28, 8))
+        lbl_title = QLabel("⬇️  Baixando atualização...")
+        lbl_title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        lbl_title.setStyleSheet(f"color: {COLORS['accent']};")
+        lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(lbl_title)
 
-        status_lbl = ctk.CTkLabel(
-            dialog,
-            text="Conectando...",
-            font=ctk.CTkFont(size=12),
-            text_color="#78909C",
-        )
-        status_lbl.pack()
+        status_lbl = QLabel("Conectando...")
+        status_lbl.setFont(QFont("Segoe UI", 12))
+        status_lbl.setStyleSheet(f"color: {COLORS['text_label']};")
+        status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(status_lbl)
 
-        prog_bar = ctk.CTkProgressBar(dialog, width=400)
-        prog_bar.pack(pady=16)
-        prog_bar.set(0)
+        prog_bar = QProgressBar()
+        prog_bar.setFixedWidth(400)
+        prog_bar.setValue(0)
+        layout.addWidget(prog_bar, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        pct_lbl = ctk.CTkLabel(
-            dialog,
-            text="0%",
-            font=ctk.CTkFont(size=11),
-            text_color="#546E7A",
-        )
-        pct_lbl.pack()
+        pct_lbl = QLabel("0%")
+        pct_lbl.setFont(QFont("Segoe UI", 11))
+        pct_lbl.setStyleSheet(f"color: {COLORS['text_muted']};")
+        pct_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(pct_lbl)
 
         def on_progress(pct: int, msg: str) -> None:
-            self.after(0, lambda: [
-                prog_bar.set(pct / 100),
-                status_lbl.configure(text=msg),
-                pct_lbl.configure(text=f"{pct}%"),
+            QTimer.singleShot(0, lambda: [
+                prog_bar.setValue(pct),
+                status_lbl.setText(msg),
+                pct_lbl.setText(f"{pct}%"),
             ])
 
         def on_success() -> None:
-            self.after(0, lambda: [
-                status_lbl.configure(text="✅ Instalação concluída! Reiniciando...", text_color="#66BB6A"),
-                pct_lbl.configure(text="100%"),
-                self.after(2000, self.destroy),  # fecha o app → bat continua a substituição
-            ])
+            def _done():
+                status_lbl.setText("✅ Instalação concluída! Reiniciando...")
+                status_lbl.setStyleSheet(f"color: {COLORS['success']};")
+                pct_lbl.setText("100%")
+                QTimer.singleShot(2000, self.close)
+            QTimer.singleShot(0, _done)
 
         def on_error(msg: str) -> None:
-            import webbrowser as _wb
-            from version import DOWNLOAD_URL as _dl
-
-            def _show_error() -> None:
-                status_lbl.configure(text=f"❌ Erro: {msg}", text_color="#EF5350")
-                ctk.CTkButton(
-                    dialog,
-                    text="Baixar manualmente",
-                    command=lambda: _wb.open(_dl),
-                ).pack(pady=8)
-
-            self.after(0, _show_error)
+            def _show():
+                status_lbl.setText(f"❌ Erro: {msg}")
+                status_lbl.setStyleSheet(f"color: {COLORS['error']};")
+                btn_manual = QPushButton("Baixar manualmente")
+                btn_manual.setObjectName("btn_primary")
+                btn_manual.clicked.connect(lambda: webbrowser.open(getattr(sys.modules.get('version', None), 'DOWNLOAD_URL', '')))
+                layout.addWidget(btn_manual, alignment=Qt.AlignmentFlag.AlignCenter)
+            QTimer.singleShot(0, _show)
 
         baixar_e_instalar(
             zip_url=zip_url,
+            expected_sha256=getattr(self, "_expected_sha256", ""),
             on_progress=on_progress,
             on_success=on_success,
             on_error=on_error,
         )
+        dialog.exec()
 
     def _fechar_banner(self) -> None:
-        self._update_banner.grid_remove()
+        self._update_banner.hide()
 
     # ── Navegação ────────────────────────────────────────────────────────────────
 
-    def _set_active_btn(self, active_btn: ctk.CTkButton) -> None:
-        for btn in [self.btn_home, self.btn_search_doc, self.btn_settings, self.btn_help]:
-            btn.configure(fg_color="transparent")
-        active_btn.configure(fg_color="#1E3A5F")
+    def _confirmar_navegacao(self, callback) -> None:
+        if not self.current_transaction or self.current_transaction.concluida:
+            callback()
+            return
 
-    def _show_screen(self, screen_class: object, **kwargs: object) -> None:
+        res = QMessageBox.question(
+            self, "Sair da Transação?",
+            "Você tem uma transação em andamento. Deseja realmente descartá-la e voltar para o início?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if res == QMessageBox.StandardButton.Yes:
+            res2 = QMessageBox.question(
+                self, "Atenção!",
+                "Todo o trabalho realizado nesta digitalização será perdido.\n\nConfirma o cancelamento?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if res2 == QMessageBox.StandardButton.Yes:
+                self.current_transaction = None
+                callback()
+
+    def _set_active_btn(self, active_btn: QPushButton) -> None:
+        for btn in self._sidebar_buttons:
+            btn.setProperty("active", False)
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+        active_btn.setProperty("active", True)
+        active_btn.style().unpolish(active_btn)
+        active_btn.style().polish(active_btn)
+
+    def _show_screen(self, screen_class, **kwargs) -> None:
         if self._current_screen:
-            self._current_screen.destroy()  # type: ignore[union-attr]
-        self._current_screen = screen_class(self.content_frame, self, **kwargs)  # type: ignore[operator]
-        self._current_screen.grid(row=0, column=0, sticky="nsew")  # type: ignore[union-attr]
+            self.stack.removeWidget(self._current_screen)
+            self._current_screen.deleteLater()
+        self._current_screen = screen_class(app=self, **kwargs)
+        self.stack.addWidget(self._current_screen)
+        self.stack.setCurrentWidget(self._current_screen)
 
     def show_home(self) -> None:
         from ui.screens.home_screen import HomeScreen
         self._set_active_btn(self.btn_home)
         self._show_screen(HomeScreen)
 
-    def show_scan(self, transaction: object) -> None:
+    def show_scan(self, transaction) -> None:
         from ui.screens.scan_screen import ScanScreen
         self.current_transaction = transaction
         self._show_screen(ScanScreen, transaction=transaction)
 
-    def show_result(self, transaction: object) -> None:
+    def show_unified_scan(self, transaction) -> None:
+        from ui.screens.unified_scan_screen import UnifiedScanScreen
+        self.current_transaction = transaction
+        self._show_screen(UnifiedScanScreen, transaction=transaction)
+
+    def show_result(self, transaction) -> None:
         from ui.screens.result_screen import ResultScreen
         self._show_screen(ResultScreen, transaction=transaction)
 
@@ -410,8 +425,6 @@ class App(ctk.CTk):
         self._set_active_btn(self.btn_search_doc)
         self._show_screen(SearchDocumentScreen)
 
-
-
     def show_help(self) -> None:
         from ui.screens.help_screen import HelpScreen
         self._set_active_btn(self.btn_help)
@@ -420,3 +433,36 @@ class App(ctk.CTk):
     def update_settings(self, new_settings: dict[str, Any]) -> None:
         self.settings = new_settings
         save_settings(new_settings)
+
+    def closeEvent(self, event) -> None:
+        """Encerra threads de background e confirma fechamento se houver transação ativa."""
+        from ui.screens.scan_screen import ScanScreen
+        from ui.screens.unified_scan_screen import UnifiedScanScreen
+        is_scanning = isinstance(self._current_screen, (ScanScreen, UnifiedScanScreen))
+        
+        if is_scanning and self.current_transaction and not self.current_transaction.concluida:
+            resp = QMessageBox.question(
+                self, "Confirmar Cancelamento",
+                "Você está no meio de uma digitalização.\n\nDeseja descartar as imagens atuais e fechar o aplicativo?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if resp != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+
+        # Pergunta final de saída (opcional, mas bom para evitar fechamentos acidentais)
+        # Se já confirmou o cancelamento acima ou se não estava escaneando, pergunta normal
+        else:
+            resp = QMessageBox.question(
+                self, "Sair do DocPopular",
+                "Deseja realmente fechar o aplicativo?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if resp != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+
+        # Se chegou aqui, encerra tudo
+        print("[App] Encerrando SyncManager...")
+        sync_manager.stop()
+        event.accept()

@@ -97,10 +97,6 @@ def load_settings() -> dict[str, Any]:
     with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
         data: dict[str, Any] = json.load(f)
 
-    # Descriptografa as chaves de API
-    for provider in data.get("api_keys", {}):
-        data["api_keys"][provider] = _decrypt(data["api_keys"][provider])
-
     # Garante que campos novos existam
     for key, value in DEFAULT_SETTINGS.items():
         if key not in data:

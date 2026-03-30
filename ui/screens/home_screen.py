@@ -1,145 +1,182 @@
 """
-home_screen.py - Tela inicial para seleção do tipo de transação.
+home_screen.py - Tela inicial (PySide6).
+Fluxo único inteligente: CPF + botão de iniciar.
 """
 
 from __future__ import annotations
+from typing import TYPE_CHECKING
 
-from typing import TYPE_CHECKING, Optional
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QFrame, QLineEdit, QPushButton, QMessageBox,
+)
 
-import customtkinter as ctk
-from core.transaction import TIPOS_TRANSACAO, criar_transacao
+from core.cpf_manager import validate_cpf
+from core.transaction import criar_transacao_unica
+from ui.qt_styles import COLORS
 
 if TYPE_CHECKING:
     from ui.app import App
 
 
-class HomeScreen(ctk.CTkFrame):
-    def __init__(self, parent: ctk.CTkFrame, app: App, **kwargs: object) -> None:
-        super().__init__(parent, fg_color="transparent", **kwargs)
+class HomeScreen(QWidget):
+    def __init__(self, app: "App", **kwargs):
+        super().__init__(**kwargs)
         self.app = app
-        self.selected_type: Optional[int] = None
-        self.type_buttons: dict[int, tuple[ctk.CTkFrame, ctk.CTkButton]] = {}
         self._build()
 
     def _build(self):
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(40, 32, 40, 32)
+        layout.setSpacing(0)
 
-        # ── Cabeçalho ─────────────────────────────────────────────────────────
-        header = ctk.CTkFrame(self, fg_color="transparent")
-        header.grid(row=0, column=0, padx=40, pady=(40, 8), sticky="ew")
+        # ── Cabeçalho ─────────────────────────────────────────────────────
+        lbl_title = QLabel("Nova Transação")
+        lbl_title.setFont(QFont("Segoe UI", 30, QFont.Bold))
+        lbl_title.setStyleSheet(f"color: {COLORS['text_primary']};")
+        layout.addWidget(lbl_title)
 
-        ctk.CTkLabel(
-            header,
-            text="Nova Transação",
-            font=ctk.CTkFont(size=28, weight="bold"),
-            text_color="#E3F2FD",
-        ).pack(anchor="w")
-
-        ctk.CTkLabel(
-            header,
-            text="Selecione o tipo de transação para iniciar a digitalização dos documentos.",
-            font=ctk.CTkFont(size=13),
-            text_color="#78909C",
-        ).pack(anchor="w")
+        lbl_sub = QLabel("Inicie digitando o CPF do paciente. O sistema guiará você pelo processo de digitalização.")
+        lbl_sub.setFont(QFont("Segoe UI", 14))
+        lbl_sub.setStyleSheet(f"color: {COLORS['text_label']};")
+        lbl_sub.setWordWrap(True)
+        layout.addWidget(lbl_sub)
 
         # Separador
-        ctk.CTkFrame(self, height=1, fg_color="#1E3450").grid(
-            row=1, column=0, sticky="ew", padx=40, pady=(0, 24)
-        )
+        sep = QFrame()
+        sep.setObjectName("separator")
+        sep.setFrameShape(QFrame.HLine)
+        sep.setFixedHeight(1)
+        sep.setStyleSheet(f"background-color: {COLORS['separator']};")
+        layout.addWidget(sep)
+        layout.addSpacing(40)
 
-        # ── Cards de tipo ─────────────────────────────────────────────────────
-        cards_frame = ctk.CTkFrame(self, fg_color="transparent")
-        cards_frame.grid(row=2, column=0, padx=40, sticky="n")
-        cards_frame.grid_columnconfigure((0, 1, 2), weight=1)
+        # ── Card Central ──────────────────────────────────────────────────
+        card = QFrame()
+        card.setObjectName("card")
+        card.setFixedWidth(560)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(40, 40, 40, 40)
+        card_layout.setSpacing(16)
 
-        for tipo_id, info in TIPOS_TRANSACAO.items():
-            self._build_type_card(cards_frame, tipo_id, info)
+        # Ícone + Título do Card
+        lbl_card_icon = QLabel("🏥")
+        lbl_card_icon.setFont(QFont("Segoe UI Emoji", 36))
+        lbl_card_icon.setAlignment(Qt.AlignCenter)
+        card_layout.addWidget(lbl_card_icon)
 
-        # ── Botão Iniciar ──────────────────────────────────────────────────────
-        self.btn_start = ctk.CTkButton(
-            self,
-            text="▶   Iniciar Digitalização",
-            font=ctk.CTkFont(size=15, weight="bold"),
-            height=50,
-            corner_radius=10,
-            fg_color="#1565C0",
-            hover_color="#1976D2",
-            state="disabled",
-            command=self._iniciar,
-        )
-        self.btn_start.grid(row=3, column=0, padx=40, pady=(40, 40), ipadx=20)
+        lbl_card_title = QLabel("Identificação do Paciente")
+        lbl_card_title.setFont(QFont("Segoe UI", 20, QFont.Bold))
+        lbl_card_title.setStyleSheet(f"color: {COLORS['accent']};")
+        lbl_card_title.setAlignment(Qt.AlignCenter)
+        card_layout.addWidget(lbl_card_title)
 
-    def _build_type_card(self, parent, tipo_id: int, info: dict):
-        col = tipo_id - 1
-        card = ctk.CTkFrame(
-            parent,
-            fg_color="#0D1B2A",
-            corner_radius=16,
-            border_width=2,
-            border_color="#1E3450",
-        )
-        card.grid(row=0, column=col, padx=12, pady=8, sticky="nsew", ipadx=10, ipady=10)
+        lbl_card_sub = QLabel("Para iniciar, digite o CPF do Paciente")
+        lbl_card_sub.setFont(QFont("Segoe UI", 13))
+        lbl_card_sub.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        lbl_card_sub.setAlignment(Qt.AlignCenter)
+        card_layout.addWidget(lbl_card_sub)
 
-        ctk.CTkLabel(
-            card,
-            text=info["icone"],
-            font=ctk.CTkFont(size=42),
-        ).pack(pady=(24, 8))
+        card_layout.addSpacing(8)
 
-        ctk.CTkLabel(
-            card,
-            text=info["nome"],
-            font=ctk.CTkFont(size=15, weight="bold"),
-            text_color="#E3F2FD",
-        ).pack()
+        # Campo CPF
+        cpf_container = QVBoxLayout()
+        cpf_row = QHBoxLayout()
 
-        ctk.CTkLabel(
-            card,
-            text=info["descricao"],
-            font=ctk.CTkFont(size=11),
-            text_color="#78909C",
-            wraplength=200,
-        ).pack(pady=(4, 8))
+        lbl_cpf = QLabel("CPF:")
+        lbl_cpf.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        lbl_cpf.setStyleSheet(f"color: {COLORS['text_primary']};")
+        cpf_row.addWidget(lbl_cpf)
 
-        etapas_texto = f"📑 {info['etapas']} etapas de digitalização"
-        ctk.CTkLabel(
-            card,
-            text=etapas_texto,
-            font=ctk.CTkFont(size=11),
-            text_color="#4FC3F7",
-        ).pack(pady=(0, 8))
+        self.entry_cpf = QLineEdit()
+        self.entry_cpf.setPlaceholderText("000.000.000-00")
+        self.entry_cpf.setFont(QFont("Segoe UI", 16))
+        self.entry_cpf.setFixedHeight(44)
+        self.entry_cpf.setMaxLength(14)
+        self.entry_cpf.textChanged.connect(self._on_cpf_changed)
+        cpf_row.addWidget(self.entry_cpf)
 
-        btn_select = ctk.CTkButton(
-            card,
-            text="Selecionar",
-            font=ctk.CTkFont(size=12),
-            corner_radius=8,
-            height=36,
-            fg_color="#1E3A5F",
-            hover_color="#1565C0",
-            command=lambda t=tipo_id, c=card: self._select_type(t, c),
-        )
-        btn_select.pack(pady=(8, 20), padx=20, fill="x")
-        self.type_buttons[tipo_id] = (card, btn_select)
+        cpf_container.addLayout(cpf_row)
 
-    def _select_type(self, tipo_id: int, card):
-        self.selected_type = tipo_id
+        self.lbl_cpf_msg = QLabel("")
+        self.lbl_cpf_msg.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        self.lbl_cpf_msg.setAlignment(Qt.AlignCenter)
+        self.lbl_cpf_msg.hide()
+        cpf_container.addWidget(self.lbl_cpf_msg)
 
-        # Reset visual de todos os cards
-        for tid, (c, b) in self.type_buttons.items():
-            c.configure(border_color="#1E3450")
-            b.configure(fg_color="#1E3A5F", text="Selecionar")
+        card_layout.addLayout(cpf_container)
 
-        # Destaca o selecionado
-        card.configure(border_color="#1565C0")
-        self.type_buttons[tipo_id][1].configure(fg_color="#1565C0", text="✓ Selecionado")
+        # Botões de Ação
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
 
-        # Ativa o botão de iniciar
-        self.btn_start.configure(state="normal")
+        self.btn_start = QPushButton("🚀 Iniciar Digitalização")
+        self.btn_start.setFont(QFont("Segoe UI", 13, QFont.Bold))
+        self.btn_start.setFixedSize(260, 46)  # Largura travada para evitar que o botão fique gigante
+        self.btn_start.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_start.clicked.connect(self._iniciar)
+        self._set_button_enabled(self.btn_start, False)
+        
+        btn_row.addWidget(self.btn_start)
+        btn_row.addStretch(1)
+        card_layout.addLayout(btn_row)
+
+        # Centraliza o card
+        h_center = QHBoxLayout()
+        h_center.addStretch(1)
+        h_center.addWidget(card)
+        h_center.addStretch(1)
+        layout.addLayout(h_center)
+        layout.addStretch(1)
+
+    def _set_button_enabled(self, btn: QPushButton, enabled: bool):
+        btn.setEnabled(enabled)
+        if enabled:
+            btn.setStyleSheet(f"background-color: {COLORS['btn_primary']}; color: white; border-radius: 10px; padding: 10px; border: 1px solid transparent;")
+        else:
+            btn.setStyleSheet(f"background-color: {COLORS['btn_secondary']}; color: {COLORS['text_muted']}; border-radius: 10px; padding: 10px; border: 1px solid transparent;")
+
+    def _on_cpf_changed(self, text: str):
+        """Aplica máscara de CPF e valida."""
+        digits = "".join(c for c in text if c.isdigit())[:11]
+        masked = ""
+        for i, d in enumerate(digits):
+            if i in [3, 6]:
+                masked += "."
+            elif i == 9:
+                masked += "-"
+            masked += d
+
+        if text != masked:
+            self.entry_cpf.blockSignals(True)
+            self.entry_cpf.setText(masked)
+            self.entry_cpf.setCursorPosition(len(masked))
+            self.entry_cpf.blockSignals(False)
+
+        # Validação
+        if len(masked) == 14:
+            if validate_cpf(masked):
+                self.lbl_cpf_msg.setText("✅ CPF Válido")
+                self.lbl_cpf_msg.setStyleSheet(f"color: {COLORS['success']};")
+                self.lbl_cpf_msg.show()
+                self._set_button_enabled(self.btn_start, True)
+            else:
+                self.lbl_cpf_msg.setText("⚠️ CPF Inválido")
+                self.lbl_cpf_msg.setStyleSheet(f"color: {COLORS['error']};")
+                self.lbl_cpf_msg.show()
+                self._set_button_enabled(self.btn_start, False)
+        else:
+            self.lbl_cpf_msg.hide()
+            self._set_button_enabled(self.btn_start, False)
 
     def _iniciar(self):
-        if self.selected_type is None:
+        cpf = self.entry_cpf.text()
+        if not validate_cpf(cpf):
             return
-        transaction = criar_transacao(self.selected_type)
-        self.app.show_scan(transaction)
+        
+        from core.transaction import criar_transacao_unificada
+        transaction = criar_transacao_unificada(cpf_paciente=cpf)
+        self.entry_cpf.clear()
+        self.app.show_unified_scan(transaction)
